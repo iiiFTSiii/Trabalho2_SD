@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # O nosso "Diretório" do Broker é apenas este serviço puxando a imagem oficial
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_broker
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sd_network
+
+  sensor_1:
+    build:
+      context: .
+      dockerfile: sensor/Dockerfile
+    container_name: sensor_1
+    environment:
+      - NODE_ID=sensor_1
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN # Necessário para o script de caos conseguir alterar o tráfego de rede
+
+  sensor_2:
+    build:
+      context: .
+      dockerfile: sensor/Dockerfile
+    container_name: sensor_2
+    environment:
+      - NODE_ID=sensor_2
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN
+
+  semaforo_1:
+    build:
+      context: .
+      dockerfile: semaforo/Dockerfile
+    container_name: semaforo_1
+    environment:
+      - NODE_ID=semaforo_1
+      - TOTAL_NODES=2
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN
+
+  semaforo_2:
+    build:
+      context: .
+      dockerfile: semaforo/Dockerfile
+    container_name: semaforo_2
+    environment:
+      - NODE_ID=semaforo_2
+      - TOTAL_NODES=2
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN
+
+networks:
+  sd_network:
+    driver: bridge
