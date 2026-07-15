@@ -5,8 +5,9 @@ import time
 
 import pika
 
-from comum.clock_sync import sync_clock_cristian
+from comum.clock_sync import DriftingClock
 from sensor.logical_clock import LamportClock
+from sensor.time_sync_client import TimeSyncClient
 
 NODE_ID = os.getenv('NODE_ID', 'sensor_unknown')
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
@@ -29,21 +30,30 @@ def start_publishing():
     channel = connection.channel()
     channel.exchange_declare(exchange='traffic_data', exchange_type='fanout')
 
-    physical_time_offset = random.uniform(-5.0, 5.0)
-    print(f"[{NODE_ID}] Deriva de tempo inicial: {physical_time_offset:.2f}s", flush=True)
+    # Deriva artificial de relogio fisico (Restricao C). Cada sensor
+    # acelera ou atrasa seu proprio relogio em relacao ao host.
+    drift_offset = random.uniform(-8.0, 8.0)
+    physical_clock = DriftingClock(drift_offset_seconds=drift_offset)
+    print(f"[{NODE_ID}] Deriva de tempo artificial injetada: {drift_offset:.2f}s", flush=True)
+
+    # Cliente de sincronizacao Cristian: pede a hora ao semaforo lider
+    # periodicamente via o proprio middleware Pub-Sub e corrige a
+    # deriva. E proibido consultar NTP externo.
+    time_sync = TimeSyncClient(RABBITMQ_HOST, NODE_ID, physical_clock)
+    time_sync.start()
 
     while True:
         try:
             clock.tick()
             cars_count = random.randint(0, 20)
-            current_physical_time = time.time() + physical_time_offset
 
             message = {
                 'sensor_id': NODE_ID,
                 'cars': cars_count,
                 'lamport_time': clock.get_time(),
-                'physical_time': current_physical_time,
-                'clock_offset': sync_clock_cristian(current_physical_time, current_physical_time, 0),
+                'physical_time_raw': time.time() + drift_offset,
+                'physical_time_synced': physical_clock.now(),
+                'clock_correction_applied': physical_clock.current_correction,
             }
 
             channel.basic_publish(
@@ -58,6 +68,7 @@ def start_publishing():
             print(f"[{NODE_ID}] Conexão perdida. Reconectando...", flush=True)
             connection = connect_broker()
             channel = connection.channel()
+            channel.exchange_declare(exchange='traffic_data', exchange_type='fanout')
 
 
 if __name__ == '__main__':

@@ -1,117 +1,100 @@
-# Sistema Distribuído de Monitoramento de Tráfego Urbano
+# Sistema Distribuído de Monitoramento de Tráfego Urbano (SD-Tráfego)
 
-Este projeto implementa um protótipo distribuído descentralizado para monitoramento e controle de tráfego urbano em tempo real usando um modelo baseado em eventos com RabbitMQ. A arquitetura é composta por:
+Protótipo distribuído descentralizado para monitoramento e controle de tráfego
+urbano em tempo real, usando arquitetura orientada a eventos (Publish-Subscribe)
+com RabbitMQ.
 
-- sensores que publicam dados de fluxo de veículos;
-- semáforos que consomem esses dados e processam de forma causal;
-- um broker RabbitMQ para comunicação;
-- mecanismos básicos de eleição de líder, quorum, checkpoint e injeção de caos.
+## Arquitetura
 
-## Como o projeto funciona
+- **2 sensores** (`sensor_1`, `sensor_2`): publicam dados de fluxo de veículos
+  com relógio lógico de Lamport e relógio físico com deriva artificial,
+  sincronizado periodicamente via Algoritmo de Cristian.
+- **4 semáforos** (`semaforo_1..4`): consomem os dados, reordenam causalmente,
+  fazem heartbeat entre si, elegem um líder (variante do Bully com quórum de
+  maioria estrita) e persistem checkpoints em volume próprio.
+- **1 broker RabbitMQ** central.
 
-### 1. Sensores
-Os containers `sensor_1` e `sensor_2` simulam nós sensores. Eles:
+Usar 4 semáforos (em vez de 2) é o que permite demonstrar de verdade o cenário
+de partição 2x2 exigido no enunciado (Restrição B) sem risco de split-brain.
 
-- publicam mensagens com dados como `sensor_id`, `cars`, `lamport_time` e `physical_time`;
-- usam um relógio lógico de Lamport para ordenar eventos localmente;
-- enviam as mensagens para o exchange `traffic_data` do RabbitMQ.
+## Métodos utilizados para garantir tolerancia a falhas:
 
-### 2. Semáforos
-Os containers `semaforo_1` e `semaforo_2` simulam atuadores. Eles:
+1. **Sincronização de relógio real (Cristian)**: os sensores agora fazem uma
+   requisição/resposta via RabbitMQ (`time_sync_request`) para o semáforo
+   líder (que não sofre deriva), medem o RTT e calculam o offset pelo
+   Algoritmo de Cristian de fato — antes o cálculo não usava nenhuma troca de
+   mensagem real e sempre retornava offset zero.
+2. **Heartbeat conectado à eleição**: antes a classe `HeartbeatMonitor` existia
+   mas nunca era instanciada; o quórum nunca era atingido. Agora ela roda
+   continuamente e alimenta a eleição.
+3. **Eleição reativa**: antes a eleição rodava uma única vez no boot. Agora um
+   monitor em background detecta quando o líder para de mandar heartbeat
+   (`docker kill`, queda de rede) e dispara uma nova eleição automaticamente.
+4. **Buffer causal sem risco de travar para sempre**: a versão anterior
+   esperava um número de sequência exato; se uma mensagem se perdesse (5% de
+   perda, conforme a Restrição A), o processamento travava para sempre. Agora
+   o buffer é liberado por uma janela de tempo e ordenado por
+   `(lamport_time, sensor_id)`, com desempate determinístico.
+5. **Persistência real de checkpoint**: cada semáforo agora tem um volume
+   Docker nomeado próprio (`semaforo_N_data`), então o estado sobrevive a um
+   `docker kill` + reinício do mesmo container.
+6. **Partição 2x2 de verdade**: o script de caos agora isola `semaforo_3` e
+   `semaforo_4` da rede, deixando `semaforo_1` e `semaforo_2` do outro lado —
+   com quórum = 3/4, nenhum dos dois lados consegue eleger líder sozinho.
 
-- recebem as mensagens publicadas pelos sensores;
-- armazenam mensagens fora de ordem quando necessário;
-- processam as mensagens de forma causal com base no Lamport;
-- realizam uma eleição simples de líder com verificação de quorum.
-
-### 3. Tolerância a falhas e recuperação
-O sistema possui:
-
-- checkpoint simples para persistir o estado do semáforo;
-- recuperação de estado ao reiniciar o container;
-- heartbeats básicos para monitorar nós ativos.
-
-### 4. Injeção de caos
-O script [infra/chaos_injector.sh](infra/chaos_injector.sh) permite simular cenários de falha e rede para validar o comportamento do sistema:
-
-- latência variável e perda de pacotes;
-- partição de rede entre os semáforos;
-- restauração da rede.
-
-## Como rodar o projeto
-
-Na raiz do projeto, execute:
+## Como rodar
 
 ```bash
 docker compose up --build
 ```
 
-Esse comando sobe:
+Isso sobe: RabbitMQ, 2 sensores e 4 semáforos.
 
-- o broker RabbitMQ;
-- os sensores;
-- os semáforos.
-
-Se os containers já foram construídos antes, você pode usar:
-
-```bash
-docker compose up
-```
-
-## Como verificar se o sistema está funcionando
-
-### 1. Verificar o estado dos containers
+## Verificando o sistema
 
 ```bash
 docker compose ps
+docker compose logs -f semaforo_1 semaforo_2 semaforo_3 semaforo_4
 ```
 
-Você deve ver os containers com status `Up`.
+Nos logs dos semáforos você deve ver:
+- `Iniciando eleicao...` / `Eu sou o novo lider` / `Novo lider e semaforo_X`
+- `Processando causalmente (#N): {...}` — mensagens já reordenadas
+- `Sincronizado via Cristian: offset=... rtt=...` (nos logs dos sensores)
 
-### 2. Acompanhar os logs
-
-```bash
-docker compose logs -f sensor_1 sensor_2 semaforo_1 semaforo_2
-```
-
-O que é esperado aparecer:
-
-- nos sensores:
-  - mensagens de publicação;
-  - logs indicando o tempo inicial de deriva do relógio local.
-- nos semáforos:
-  - logs de recebimento das mensagens;
-  - logs de processamento causal;
-  - logs de eleição de líder ou modo seguro.
-
-## Como testar a injeção de caos
-
-### Latência e perda de pacotes
+## Cenários de caos (`infra/chaos_injector.sh`)
 
 ```bash
+# Restrição A: latência flutuante + 5% de perda nos sensores
 bash infra/chaos_injector.sh latency
-```
 
-Esse comando aplica latência e perda de pacotes nos sensores para simular uma rede não confiável.
-
-### Partição de rede
-
-```bash
+# Restrição B: partição 2x2 entre os semáforos (nenhum lado deve eleger líder)
 bash infra/chaos_injector.sh partition
-```
 
-Esse comando simula uma partição de rede entre os semáforos.
-
-### Restaurar a rede
-
-```bash
+# Restaurar a rede (deve ocorrer nova eleição automaticamente, quórum 4/4)
 bash infra/chaos_injector.sh restore
+
+# Matar o líder atual e observar a reeleição automática
+bash infra/chaos_injector.sh kill-leader
+
+# Ver status dos containers
+bash infra/chaos_injector.sh status
 ```
 
-Esse comando restaura a conectividade da rede.
+Para provar a recuperação de estado (Restrição/Módulo 4), depois do
+`kill-leader` (ou de um `docker kill semaforo_X` manual), religue o container
+com `docker start semaforo_X` (não recrie com `up`, senão perde o propósito de
+mostrar continuidade) e confira nos logs a linha `Recuperacao concluida.
+Mensagens ja processadas antes da queda: N`.
 
-## Como parar o sistema
+## Parar o sistema
 
 ```bash
 docker compose down
+```
+
+Para apagar também os volumes de checkpoint:
+
+```bash
+docker compose down -v
 ```

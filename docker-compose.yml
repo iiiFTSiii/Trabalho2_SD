@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # O nosso "Diretório" do Broker é apenas este serviço puxando a imagem oficial
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq_broker
@@ -30,7 +29,8 @@ services:
     networks:
       - sd_network
     cap_add:
-      - NET_ADMIN # Necessário para o script de caos conseguir alterar o tráfego de rede
+      - NET_ADMIN
+    restart: unless-stopped
 
   sensor_2:
     build:
@@ -47,7 +47,12 @@ services:
       - sd_network
     cap_add:
       - NET_ADMIN
+    restart: unless-stopped
 
+  # 4 instancias de semaforo, para permitir uma particao real 2x2
+  # (Restricao B). Com TOTAL_NODES=4, quorum de maioria estrita = 3.
+  # Nenhum dos dois lados de uma particao 2x2 atinge 3/4, entao nenhum
+  # dos dois elege lider -> anti split-brain comprovado.
   semaforo_1:
     build:
       context: .
@@ -55,8 +60,9 @@ services:
     container_name: semaforo_1
     environment:
       - NODE_ID=semaforo_1
-      - TOTAL_NODES=2
+      - TOTAL_NODES=4
       - RABBITMQ_HOST=rabbitmq
+      - STATE_FILE=/app/data/state.json
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -64,6 +70,12 @@ services:
       - sd_network
     cap_add:
       - NET_ADMIN
+    volumes:
+      - semaforo_1_data:/app/data
+    # Sem restart automatico: o objetivo da demo e o grupo religar o
+    # no manualmente (docker start semaforo_1) e mostrar que o estado
+    # e recuperado do checkpoint em volume persistente.
+    restart: "no"
 
   semaforo_2:
     build:
@@ -72,8 +84,9 @@ services:
     container_name: semaforo_2
     environment:
       - NODE_ID=semaforo_2
-      - TOTAL_NODES=2
+      - TOTAL_NODES=4
       - RABBITMQ_HOST=rabbitmq
+      - STATE_FILE=/app/data/state.json
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -81,7 +94,59 @@ services:
       - sd_network
     cap_add:
       - NET_ADMIN
+    volumes:
+      - semaforo_2_data:/app/data
+    restart: "no"
+
+  semaforo_3:
+    build:
+      context: .
+      dockerfile: semaforo/Dockerfile
+    container_name: semaforo_3
+    environment:
+      - NODE_ID=semaforo_3
+      - TOTAL_NODES=4
+      - RABBITMQ_HOST=rabbitmq
+      - STATE_FILE=/app/data/state.json
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - semaforo_3_data:/app/data
+    restart: "no"
+
+  semaforo_4:
+    build:
+      context: .
+      dockerfile: semaforo/Dockerfile
+    container_name: semaforo_4
+    environment:
+      - NODE_ID=semaforo_4
+      - TOTAL_NODES=4
+      - RABBITMQ_HOST=rabbitmq
+      - STATE_FILE=/app/data/state.json
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - sd_network
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - semaforo_4_data:/app/data
+    restart: "no"
 
 networks:
   sd_network:
+    name: sd_trafego_network
     driver: bridge
+
+volumes:
+  semaforo_1_data:
+  semaforo_2_data:
+  semaforo_3_data:
+  semaforo_4_data:
