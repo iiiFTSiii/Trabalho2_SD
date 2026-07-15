@@ -22,20 +22,13 @@ de partição 2x2 exigido no enunciado (Restrição B) sem risco de split-brain.
 1. **Sincronização de relógio real (Cristian)**: os sensores agora fazem uma
    requisição/resposta via RabbitMQ (`time_sync_request`) para o semáforo
    líder (que não sofre deriva), medem o RTT e calculam o offset pelo
-   Algoritmo de Cristian de fato — antes o cálculo não usava nenhuma troca de
-   mensagem real e sempre retornava offset zero.
-2. **Heartbeat conectado à eleição**: antes a classe `HeartbeatMonitor` existia
-   mas nunca era instanciada; o quórum nunca era atingido. Agora ela roda
-   continuamente e alimenta a eleição.
-3. **Eleição reativa**: antes a eleição rodava uma única vez no boot. Agora um
-   monitor em background detecta quando o líder para de mandar heartbeat
+   Algoritmo de Cristian de fato.
+2. **Heartbeat conectado à eleição**: antes a classe `HeartbeatMonitor` existia mas nunca era instanciada; o quórum nunca era atingido.
+3. **Eleição reativa**: monitor em background detecta quando o líder para de mandar heartbeat
    (`docker kill`, queda de rede) e dispara uma nova eleição automaticamente.
-4. **Buffer causal sem risco de travar para sempre**: a versão anterior
-   esperava um número de sequência exato; se uma mensagem se perdesse (5% de
-   perda, conforme a Restrição A), o processamento travava para sempre. Agora
-   o buffer é liberado por uma janela de tempo e ordenado por
+4. **Buffer causal sem risco de travar para sempre**: buffer é liberado por uma janela de tempo e ordenado por
    `(lamport_time, sensor_id)`, com desempate determinístico.
-5. **Persistência real de checkpoint**: cada semáforo agora tem um volume
+5. **Persistência real de checkpoint**: cada semáforo tem um volume
    Docker nomeado próprio (`semaforo_N_data`), então o estado sobrevive a um
    `docker kill` + reinício do mesmo container.
 6. **Partição 2x2 de verdade**: o script de caos agora isola `semaforo_3` e

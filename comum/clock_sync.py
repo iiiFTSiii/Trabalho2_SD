@@ -1,9 +1,7 @@
 """
 Sincronizacao fisica de relogios - variacao do Algoritmo de Cristian.
 
-Diferente da versao anterior (que so calculava um offset local sem
-nenhuma troca de mensagens real), aqui o offset e calculado a partir
-de uma requisicao/resposta feita atraves do proprio middleware Pub-Sub
+O offset e calculado a partir de uma requisicao/resposta feita atraves do proprio middleware Pub-Sub
 (RabbitMQ), medindo o RTT (round-trip time) real da requisicao.
 
 Fluxo:
